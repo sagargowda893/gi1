@@ -1,0 +1,91 @@
+#1
+!pip install -q transformers datasets rouge-score sentencepiece
+
+import torch
+import pandas as pd
+from datasets import load_dataset
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from rouge_score import rouge_scorer
+
+# Load dataset
+dataset = load_dataset("S3IC/cnn_dailymail", split="train")
+
+# Load model
+name = "facebook/bart-large-cnn"
+tokenizer = AutoTokenizer.from_pretrained(name)
+model = AutoModelForSeq2SeqLM.from_pretrained(name)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model.to(device).eval()
+
+# ROUGE evaluator
+scorer = rouge_scorer.RougeScorer(
+    ["rouge1", "rouge2", "rougeL"], use_stemmer=True
+)
+
+# Parameters
+NUM_ARTICLES = 5
+MAX_INPUT_LENGTH = 512
+MAX_SUMMARY_LENGTH = 100
+MIN_SUMMARY_LENGTH = 20
+
+results = []
+
+# Summarization and evaluation
+for i in range(NUM_ARTICLES):
+    article = dataset[i]["article"]
+    reference = dataset[i]["highlights"]
+
+    inputs = tokenizer(
+        article,
+        max_length=MAX_INPUT_LENGTH,
+        truncation=True,
+        return_tensors="pt"
+    ).to(device)
+
+    with torch.no_grad():
+        output = model.generate(
+            **inputs,
+            max_length=MAX_SUMMARY_LENGTH,
+            min_length=MIN_SUMMARY_LENGTH,
+            num_beams=4,
+            no_repeat_ngram_size=3,
+            early_stopping=True
+        )
+
+    summary = tokenizer.decode(output[0], skip_special_tokens=True)
+
+    scores = scorer.score(reference, summary)
+    r1 = scores["rouge1"].fmeasure
+    r2 = scores["rouge2"].fmeasure
+    rl = scores["rougeL"].fmeasure
+
+    results.append({
+        "Article": i + 1,
+        "Generated Summary": summary,
+        "Reference Summary": reference,
+        "ROUGE-1": r1,
+        "ROUGE-2": r2,
+        "ROUGE-L": rl
+    })
+
+    print("\n" + "=" * 60)
+    print("ARTICLE:", i + 1)
+    print("\nGENERATED SUMMARY:\n", summary)
+    print("\nREFERENCE SUMMARY:\n", reference)
+    print("\nROUGE-1:", round(r1, 4))
+    print("ROUGE-2:", round(r2, 4))
+    print("ROUGE-L:", round(rl, 4))
+
+# Results table
+df = pd.DataFrame(results)
+
+print("\nAVERAGE ROUGE SCORES")
+print(df[["ROUGE-1", "ROUGE-2", "ROUGE-L"]].mean().round(4))
+
+display(df[["Article", "ROUGE-1", "ROUGE-2", "ROUGE-L"]])
+
+# Save results
+df.to_csv("summarization_results.csv", index=False)
+print("\nResults saved to summarization_results.csv")
+print("Experiment completed successfully!")
